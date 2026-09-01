@@ -1,11 +1,13 @@
-"""Reversible Windows scheduling tweaks used by Game Connection Stabilizer."""
+"""Reversible Windows scheduling and QoS tweaks used by Game Connection Stabilizer."""
 
 from __future__ import annotations
 
 import ctypes
 import logging
+import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 
@@ -16,6 +18,9 @@ PROCESS_PRIORITY_CLASSES = {
     "high": 0x00000080,
     "realtime": 0x00000100,
 }
+
+QOS_POLICY_NAME = "2KStabilizer-Chiaki"
+QOS_DSCP = 46
 
 
 def set_process_priority(level: str) -> str:
@@ -38,6 +43,88 @@ def set_process_priority(level: str) -> str:
         raise SystemTweaksError(f"Windows applied priority class 0x{actual:X} instead of 0x{requested:X}")
     LOGGER.info("Process priority changed to %s",normalized)
     return normalized
+
+
+def _powershell(script: str) -> str:
+    if sys.platform != "win32":
+        raise SystemTweaksError("Windows QoS requires Windows.")
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            creationflags=creationflags,
+            check=False,
+        )
+    except Exception as exc:
+        raise SystemTweaksError(f"Could not run Windows QoS command: {exc}") from exc
+    if result.returncode != 0:
+        detail=(result.stderr or result.stdout or "Windows rejected the QoS request.").strip()
+        raise SystemTweaksError(detail)
+    return (result.stdout or "").strip()
+
+
+def configure_chiaki_qos(executable: str, dscp: int = QOS_DSCP) -> str:
+    """Create an active Windows Policy-based QoS rule for the selected Chiaki executable.
+
+    The rule marks Chiaki traffic with DSCP EF (46). Windows/network equipment may
+    use that marking for preferential queueing, but routers that ignore DSCP will
+    not provide an upstream priority benefit. ActiveStore keeps the change
+    temporary/reversible rather than installing a permanent machine policy.
+    """
+    path=Path(str(executable).strip().strip('"')).expanduser()
+    if not path.is_file():
+        raise SystemTweaksError("Select a valid Chiaki NG executable before enabling QoS.")
+    if not 0 <= int(dscp) <= 63:
+        raise SystemTweaksError("DSCP must be between 0 and 63.")
+    safe_path=str(path.resolve()).replace("'","''")
+    safe_name=QOS_POLICY_NAME.replace("'","''")
+    script=(
+        f"$n='{safe_name}'; $p='{safe_path}'; "
+        "Get-NetQosPolicy -PolicyStore ActiveStore -Name $n -ErrorAction SilentlyContinue | "
+        "Remove-NetQosPolicy -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue; "
+        f"New-NetQosPolicy -PolicyStore ActiveStore -Name $n -AppPathNameMatch $p -DSCPAction {int(dscp)} -NetworkProfile All -ErrorAction Stop | Out-Null; "
+        "$q=Get-NetQosPolicy -PolicyStore ActiveStore -Name $n -ErrorAction Stop; "
+        "Write-Output ($q.Name + '|' + $q.AppPathNameMatch + '|' + $q.DSCPAction)"
+    )
+    output=_powershell(script)
+    LOGGER.info("Chiaki QoS enabled for %s with DSCP %d",path,dscp)
+    return output or f"{QOS_POLICY_NAME}|{path}|{dscp}"
+
+
+def remove_chiaki_qos() -> None:
+    """Remove the temporary Chiaki QoS policy if it exists."""
+    if sys.platform != "win32":
+        return
+    safe_name=QOS_POLICY_NAME.replace("'","''")
+    script=(
+        f"$n='{safe_name}'; "
+        "Get-NetQosPolicy -PolicyStore ActiveStore -Name $n -ErrorAction SilentlyContinue | "
+        "Remove-NetQosPolicy -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue"
+    )
+    _powershell(script)
+    LOGGER.info("Chiaki QoS disabled")
+
+
+def chiaki_qos_status() -> dict[str, str | int | bool]:
+    """Return the active Chiaki QoS policy state without changing it."""
+    if sys.platform != "win32":
+        return {"enabled":False,"message":"Windows only","path":"","dscp":QOS_DSCP}
+    safe_name=QOS_POLICY_NAME.replace("'","''")
+    script=(
+        f"$q=Get-NetQosPolicy -PolicyStore ActiveStore -Name '{safe_name}' -ErrorAction SilentlyContinue; "
+        "if($null -eq $q){Write-Output 'OFF'}else{Write-Output ('ON|' + $q.AppPathNameMatch + '|' + $q.DSCPAction)}"
+    )
+    try:out=_powershell(script)
+    except Exception as exc:return {"enabled":False,"message":str(exc),"path":"","dscp":QOS_DSCP}
+    if out.startswith("ON|"):
+        parts=out.split("|",2)
+        try:dscp=int(parts[2])
+        except Exception:dscp=QOS_DSCP
+        return {"enabled":True,"message":"Active","path":parts[1] if len(parts)>1 else "","dscp":dscp}
+    return {"enabled":False,"message":"Off","path":"","dscp":QOS_DSCP}
 
 
 class SystemTweaksError(RuntimeError):
@@ -147,9 +234,6 @@ class SystemTweaks:
         if self._kernel32 is not None and self._winmm is not None:
             return self._kernel32, self._winmm
 
-        # Explicit signatures are essential on 64-bit Windows. ctypes otherwise
-        # assumes 32-bit integer arguments/returns and truncates HANDLE values,
-        # which causes ERROR_INVALID_HANDLE (WinError 6).
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
