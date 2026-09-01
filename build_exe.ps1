@@ -7,22 +7,37 @@ Set-Location -LiteralPath $projectRoot
 $venv = Join-Path $projectRoot '.venv'
 $python = Join-Path $venv 'Scripts\python.exe'
 
+# Require Python 3.12 explicitly. pygame/source-build issues and several native
+# dependencies are much less predictable on newer Python versions.
+& py -3.12 -c "import sys; print(sys.version)" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw 'Python 3.12 (64-bit) is required. Install it from python.org, then run this script again.'
+}
+
+# Recreate an existing venv if it was made with another Python version.
+$recreateVenv = $false
+if (Test-Path -LiteralPath $python) {
+    & $python -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3,12) else 1)"
+    if ($LASTEXITCODE -ne 0) { $recreateVenv = $true }
+}
+if ($recreateVenv -and (Test-Path -LiteralPath $venv)) {
+    Write-Host 'Existing .venv is not Python 3.12; recreating it...'
+    Remove-Item -LiteralPath $venv -Recurse -Force
+}
+
 if (-not (Test-Path -LiteralPath $python)) {
-    Write-Host 'Creating Python build environment...'
-    try {
-        py -3.12 -m venv $venv
-    } catch {
-        py -m venv $venv
+    Write-Host 'Creating Python 3.12 build environment...'
+    & py -3.12 -m venv $venv
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not create the Python 3.12 virtual environment.'
     }
 }
 
-if (-not (Test-Path -LiteralPath $python)) {
-    throw 'Could not create .venv. Install 64-bit Python 3.12 and try again.'
-}
-
 Write-Host 'Installing dependencies...'
-& $python -m pip install --upgrade pip
+& $python -m pip install --upgrade pip setuptools wheel
+if ($LASTEXITCODE -ne 0) { throw 'Could not update pip/setuptools/wheel.' }
 & $python -m pip install -r requirements-build.txt
+if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
 
 Write-Host 'Building 2KStabilizer.exe...'
 & $python -m PyInstaller `
@@ -36,11 +51,8 @@ Write-Host 'Building 2KStabilizer.exe...'
     --collect-all cv2 `
     --collect-all numpy `
     --collect-all PIL `
-    --collect-all mss `
-    --collect-all dxcam `
     --collect-all vgamepad `
     --collect-all pydualsense `
-    --collect-all pygame `
     --hidden-import win32gui `
     --hidden-import win32ui `
     --hidden-import win32con `
