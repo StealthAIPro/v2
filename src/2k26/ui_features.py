@@ -9,6 +9,7 @@ from tkinter import filedialog
 
 import pluto_core
 from runtime_safety import OffsetFlick, SafeController, app_data_dir
+from system_tweaks import configure_chiaki_qos, remove_chiaki_qos, chiaki_qos_status
 from widgets import Card, Section, DelaySlider, ToggleSwitch
 
 CARD="#0f172a"; TEXT="#e2e8f0"; SUB="#94a3b8"; MUTED="#64748b"; BLUE="#2563eb"
@@ -46,7 +47,8 @@ def _load_launcher_settings():
 def _save_launcher_settings(data):
     try:
         p=_launcher_settings_path();p.parent.mkdir(parents=True,exist_ok=True)
-        p.write_text(json.dumps(data,indent=2),encoding="utf-8")
+        current=_load_launcher_settings();current.update(data)
+        p.write_text(json.dumps(current,indent=2),encoding="utf-8")
         return True
     except Exception:
         return False
@@ -57,9 +59,6 @@ def install_features(App):
     if _INSTALLED:return
     _INSTALLED=True
 
-    # Signed CV timing calibration. Positive offset delays the final controller
-    # action. Negative offset advances the visual threshold using the measured
-    # meter growth rate, so -8 ms can actually fire before the original target.
     original_process=pluto_core.CVWorker.process
     def offset_process(worker,frame,captured_at=None):
         original_target=float(worker.s.get("target_height",52)); offset=int(worker.s.get("timing_offset_ms",0))
@@ -77,8 +76,6 @@ def install_features(App):
 
     original_poll=App._poll
     def enhanced_poll(self):
-        # Keep OpenCV detection running while optionally skipping only the
-        # expensive Tk/Pillow preview conversion and redraw.
         preview_enabled=bool(getattr(self,"_preview_enabled",True))
         original_tab=getattr(self,"_active_tab",None)
         if not preview_enabled and original_tab=="Vision":
@@ -89,9 +86,18 @@ def install_features(App):
             if original_tab is not None:self._active_tab=original_tab
     App._poll=enhanced_poll
 
+    original_close=App.on_close
+    def enhanced_close(self):
+        if getattr(self,"_qos_enabled",False):
+            try:remove_chiaki_qos()
+            except Exception:pass
+            self._qos_enabled=False
+        return original_close(self)
+    App.on_close=enhanced_close
+
     original_init=App.__init__
     def enhanced_init(self,*args,**kwargs):
-        self._preview_enabled=True
+        self._preview_enabled=True;self._qos_enabled=False
         original_init(self,*args,**kwargs)
         self._settings.setdefault("timing_offset_ms",0)
         old=self._controller; self._controller=SafeController(old)
@@ -101,6 +107,8 @@ def install_features(App):
         if p is not None:_append_controller_features(self,p)
         vp=_content_frame(self._tab_frames["Vision"])
         if vp is not None:_append_vision_features(self,vp)
+        np=_content_frame(self._tab_frames["Network"])
+        if np is not None:_append_network_features(self,np)
     App.__init__=enhanced_init
 
 
@@ -167,3 +175,31 @@ def _append_vision_features(app,p):
 
     tk.Button(buttons,text="Select Path",command=browse,bd=0,bg="#273451",fg="white",activebackground="#334155",activeforeground="white",font=("Segoe UI",9,"bold"),cursor="hand2",padx=12,pady=7).pack(side="left")
     tk.Button(buttons,text="Launch Chiaki NG",command=launch,bd=0,bg=BLUE,fg="white",activebackground="#1d4ed8",activeforeground="white",font=("Segoe UI",9,"bold"),cursor="hand2",padx=12,pady=7).pack(side="left",padx=(8,0))
+
+
+def _append_network_features(app,p):
+    Section(p,"Chiaki Traffic Priority").pack(fill="x")
+    c=Card(p);c.pack(fill="x",pady=(4,12))
+    row=tk.Frame(c,bg=CARD);row.pack(fill="x",padx=12,pady=(12,6))
+    tk.Label(row,text="Windows QoS / DSCP Priority",bg=CARD,fg=TEXT,font=("Segoe UI",9,"bold")).pack(side="left")
+    status=chiaki_qos_status();app._qos_enabled=bool(status.get("enabled",False))
+    app._qos_status=tk.Label(c,text="Active · DSCP 46 (EF)" if app._qos_enabled else "Off · select Chiaki NG path first",bg=CARD,fg="#10b981" if app._qos_enabled else SUB,font=("Segoe UI",8),wraplength=760,justify="left");app._qos_status.pack(anchor="w",padx=12,pady=(0,5))
+
+    def qos_changed(state):
+        if state:
+            saved=_load_launcher_settings();path=str(saved.get("chiaki_path","")).strip()
+            if not path or not Path(path).is_file():
+                app._qos_enabled=False;app._qos_toggle.set_state(False)
+                app._qos_status.configure(text="Select and save a valid Chiaki NG path in the Vision tab first.",fg="#ef4444");return
+            try:
+                configure_chiaki_qos(path);app._qos_enabled=True
+                app._qos_status.configure(text="Active · Chiaki traffic marked DSCP 46 (EF). Router support determines upstream priority.",fg="#10b981")
+            except Exception as exc:
+                app._qos_enabled=False;app._qos_toggle.set_state(False)
+                app._qos_status.configure(text=f"QoS failed: {exc}",fg="#ef4444")
+        else:
+            try:remove_chiaki_qos();app._qos_enabled=False;app._qos_status.configure(text="Off",fg=SUB)
+            except Exception as exc:app._qos_status.configure(text=f"Could not remove QoS policy: {exc}",fg="#ef4444")
+
+    app._qos_toggle=ToggleSwitch(row,state=app._qos_enabled,on_toggle=qos_changed);app._qos_toggle.pack(side="right")
+    tk.Label(c,text="Prioritizes Chiaki at the Windows QoS layer by marking its traffic as Expedited Forwarding (DSCP 46). This can help when your router/network honors DSCP; it does not create bandwidth or reduce ISP latency by itself.",bg=CARD,fg=SUB,font=("Segoe UI",8),wraplength=760,justify="left").pack(anchor="w",padx=12,pady=(0,12))
