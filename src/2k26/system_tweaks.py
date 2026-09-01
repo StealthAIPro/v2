@@ -85,9 +85,9 @@ def configure_chiaki_qos(executable: str, dscp: int = QOS_DSCP) -> str:
         f"$n='{safe_name}'; $p='{safe_path}'; "
         "Get-NetQosPolicy -PolicyStore ActiveStore -Name $n -ErrorAction SilentlyContinue | "
         "Remove-NetQosPolicy -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue; "
-        f"New-NetQosPolicy -PolicyStore ActiveStore -Name $n -AppPathNameMatch $p -DSCPAction {int(dscp)} -NetworkProfile All -ErrorAction Stop | Out-Null; "
+        f"New-NetQosPolicy -PolicyStore ActiveStore -Name $n -AppPathNameMatchCondition $p -DSCPAction {int(dscp)} -NetworkProfile All -ErrorAction Stop | Out-Null; "
         "$q=Get-NetQosPolicy -PolicyStore ActiveStore -Name $n -ErrorAction Stop; "
-        "Write-Output ($q.Name + '|' + $q.AppPathNameMatch + '|' + $q.DSCPAction)"
+        "Write-Output ($q.Name + '|' + $q.AppPathNameMatchCondition + '|' + $q.DSCPAction)"
     )
     output=_powershell(script)
     LOGGER.info("Chiaki QoS enabled for %s with DSCP %d",path,dscp)
@@ -115,7 +115,7 @@ def chiaki_qos_status() -> dict[str, str | int | bool]:
     safe_name=QOS_POLICY_NAME.replace("'","''")
     script=(
         f"$q=Get-NetQosPolicy -PolicyStore ActiveStore -Name '{safe_name}' -ErrorAction SilentlyContinue; "
-        "if($null -eq $q){Write-Output 'OFF'}else{Write-Output ('ON|' + $q.AppPathNameMatch + '|' + $q.DSCPAction)}"
+        "if($null -eq $q){Write-Output 'OFF'}else{Write-Output ('ON|' + $q.AppPathNameMatchCondition + '|' + $q.DSCPAction)}"
     )
     try:out=_powershell(script)
     except Exception as exc:return {"enabled":False,"message":str(exc),"path":"","dscp":QOS_DSCP}
