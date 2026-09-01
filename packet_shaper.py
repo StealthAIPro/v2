@@ -61,13 +61,22 @@ def main():
     log_path=configure_logging();logging.info("Starting %s %s with Python %s",APP_NAME,APP_VERSION,sys.version);auto_register_current_executable()
     game=choose_game()
     if not game:return 0
-    # Both choices intentionally point to 2k26 for now. Change 2k27 when its
-    # own implementation is ready.
     game_folder={"2k26":"2k26","2k27":"2k26"}.get(game,"2k26")
-    game_src=SRC/game_folder
-    if not game_src.exists():
-        show_native_error("Missing game files",f"Could not find the selected game module:\n\n{game_src}");return 1
-    sys.path.insert(0,str(game_src))
+
+    # Source runs use src/<game>. PyInstaller one-file builds bundle these
+    # modules into the executable/PYZ, so no literal src/2k26 directory exists
+    # under the temporary _MEI extraction directory. Hidden imports make the
+    # modules directly importable in frozen mode.
+    if not getattr(sys,"frozen",False):
+        game_src=SRC/game_folder
+        if not game_src.exists():
+            show_native_error("Missing game files",f"Could not find the selected game module:\n\n{game_src}");return 1
+        sys.path.insert(0,str(game_src))
+    else:
+        bundle_root=Path(getattr(sys,"_MEIPASS",PROJECT_ROOT))
+        if str(bundle_root) not in sys.path:
+            sys.path.insert(0,str(bundle_root))
+
     if not dependency_available("pydivert"):
         show_native_error("Missing dependency","A required traffic component is missing. Install requirements.txt and start 2K Stabilizer again.");return 1
     try:
@@ -83,8 +92,5 @@ def main():
         logging.exception("Unhandled application error");hint=f"\n\nLog: {log_path}" if log_path else "";show_native_error("2K Stabilizer stopped",f"An unexpected error stopped 2K Stabilizer:\n\n{exc}{hint}");return 1
 if __name__=="__main__":
     exit_code=main()
-    # Cleanup is performed by App.on_close before main() returns. A frozen app
-    # must not remain invisible because a third-party native reader owns a
-    # lingering Python thread; terminate the PyInstaller child deterministically.
     if getattr(sys,"frozen",False):os._exit(exit_code)
     raise SystemExit(exit_code)
