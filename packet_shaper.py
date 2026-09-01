@@ -33,13 +33,44 @@ def ensure_admin():
 
 def dependency_available(package):return importlib.util.find_spec(package) is not None
 
+def choose_game():
+    """Show a small startup picker before game-specific modules are imported.
+
+    2K27 intentionally routes to the 2K26 module folder for now. Once a
+    src/2k27 implementation exists, only the mapping below needs to change.
+    """
+    try:
+        import tkinter as tk
+    except Exception:
+        return "2k26"
+    selected={"game":None}
+    root=tk.Tk();root.title("2K Stabilizer");root.geometry("430x245");root.resizable(False,False);root.configure(bg="#0a0e27")
+    try:root.eval("tk::PlaceWindow . center")
+    except Exception:pass
+    tk.Label(root,text="SELECT GAME",bg="#0a0e27",fg="#94a3b8",font=("Segoe UI",9,"bold")).pack(anchor="w",padx=24,pady=(22,4))
+    tk.Label(root,text="Which game are you launching?",bg="#0a0e27",fg="#e2e8f0",font=("Segoe UI",16,"bold")).pack(anchor="w",padx=24,pady=(0,16))
+    buttons=tk.Frame(root,bg="#0a0e27");buttons.pack(fill="x",padx=24)
+    def pick(game):selected["game"]=game;root.destroy()
+    for game in ("2K26","2K27"):
+        tk.Button(buttons,text=game,command=lambda g=game.lower():pick(g),bd=0,relief="flat",bg="#2563eb",fg="white",activebackground="#1d4ed8",activeforeground="white",font=("Segoe UI",11,"bold"),cursor="hand2",padx=20,pady=14).pack(side="left",expand=True,fill="x",padx=(0,8) if game=="2K26" else (8,0))
+    tk.Label(root,text="2K27 currently uses the 2K26 module until the 2K27 version is added.",bg="#0a0e27",fg="#64748b",font=("Segoe UI",8),wraplength=375,justify="left").pack(anchor="w",padx=24,pady=(16,0))
+    root.protocol("WM_DELETE_WINDOW",root.destroy);root.mainloop();return selected["game"]
+
 def main():
     if not ensure_admin():return 0
     log_path=configure_logging();logging.info("Starting %s %s with Python %s",APP_NAME,APP_VERSION,sys.version);auto_register_current_executable()
+    game=choose_game()
+    if not game:return 0
+    # Both choices intentionally point to 2k26 for now. Change 2k27 when its
+    # own implementation is ready.
+    game_folder={"2k26":"2k26","2k27":"2k26"}.get(game,"2k26")
+    game_src=SRC/game_folder
+    if not game_src.exists():
+        show_native_error("Missing game files",f"Could not find the selected game module:\n\n{game_src}");return 1
+    sys.path.insert(0,str(game_src))
     if not dependency_available("pydivert"):
         show_native_error("Missing dependency","A required traffic component is missing. Install requirements.txt and start 2K Stabilizer again.");return 1
     try:
-        sys.path.insert(0,str(SRC))
         from runtime_safety import setup_complete
         if not setup_complete():
             from setup_wizard import run_first_setup
