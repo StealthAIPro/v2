@@ -5,5 +5,4 @@ Pillow
 pywin32
 vgamepad
 pydualsense
-pygame
 hidapi
