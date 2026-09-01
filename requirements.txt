@@ -1,0 +1,9 @@
+pydivert==3.1.3
+opencv-python
+numpy
+Pillow
+pywin32
+vgamepad
+pydualsense
+pygame
+hidapi
